@@ -1,18 +1,16 @@
-# yt2itunes-cli - YouTube to iTunes MP3 Downloader
+# yt2itunes-cli - YouTube to iTunes MP3 Converter (CLI)
+Simple command-line tool that:
 
-A simple command-line tool that:
-
-- Downloads YouTube videos as high-quality MP3
-- Uses yt-dlp + FFmpeg
-- Automatically tags the file (title + artist)
-- Moves it to iTunes "Automatically Add to iTunes" folder
+- Downloads any YouTube video as MP3 (using yt-dlp + FFmpeg)
+- Automatically tags the file with title + artist
+- Embeds the video thumbnail as album artwork
+- Moves the file to iTunes "Automatically Add to iTunes" folder
 
 ## Requirements
 
 - Python 3.8+
-- yt-dlp (`pip install yt-dlp`)
-- mutagen (`pip install mutagen`)
-- FFmpeg (installed and in PATH)
+- FFmpeg (in PATH)
+- Packages: `pip install -r requirements.txt`
 
 ## Usage
 
