@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 YouTube to MP3 Converter CLI
 Downloads YouTube videos as MP3, adds enriched metadata via external APIs (Deezer / TVmaze),
@@ -47,7 +46,8 @@ def classify_content(title: str, categories: list) -> str:
     if tv_pattern or 'shows' in categories or 'film & animation' in categories:
         return 'tv_show'
 
-    if 'music' in categories or 'official music video' in title_lower:
+    # If title has " - " or category is Music, classify as music
+    if ' - ' in title or 'music' in categories or 'official music video' in title_lower:
         return 'music'
 
     return 'general'
@@ -56,10 +56,11 @@ def enrich_music(artist: str, title: str) -> dict:
     """Fetch track, album, release date, genre, and high-res artwork from Deezer."""
     cleaned_title = clean_song_title(title)
     
-    # Try exact search first, then fall back to flexible query
+    # Try exact match, combined query, and track title alone
     queries = [
         f'artist:"{artist}" track:"{cleaned_title}"',
-        f'{artist} {cleaned_title}'
+        f'{artist} {cleaned_title}',
+        f'track:"{cleaned_title}"'
     ]
 
     for query in queries:
@@ -99,7 +100,7 @@ def enrich_music(artist: str, title: str) -> dict:
         except requests.RequestException as e:
             print(f"  [!] Deezer query failed: {e}")
 
-    # Dynamic fallback if no exact Deezer track match was found
+    # Dynamic fallback if no Deezer match is found
     return {
         'album': f"{title} - Single",
         'genre': 'Music'
@@ -179,13 +180,13 @@ def download_and_process(url: str) -> None:
     yt_date = info.get('upload_date', '')[:4] if info.get('upload_date') else ''
     categories = info.get('categories', [])
 
-    # Dynamic fallback metadata structure
+    # Base metadata structure
     meta = {
         'title': yt_title,
         'artist': yt_uploader,
         'album': f"{yt_title} - Single",
         'date': yt_date,
-        'genre': 'Podcast/Web'
+        'genre': 'Music'
     }
 
     # Split "Artist - Title" format if present
