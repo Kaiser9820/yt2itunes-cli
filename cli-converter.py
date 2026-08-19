@@ -56,7 +56,7 @@ def enrich_music(artist: str, title: str) -> dict:
     """Fetch track, album, release date, genre, and high-res artwork from Deezer."""
     cleaned_title = clean_song_title(title)
     
-    # Try an exact search first, then fall back to a flexible query
+    # Try exact search first, then fall back to flexible query
     queries = [
         f'artist:"{artist}" track:"{cleaned_title}"',
         f'{artist} {cleaned_title}'
@@ -77,7 +77,7 @@ def enrich_music(artist: str, title: str) -> dict:
                 release_date = ""
                 genre_name = "Music"
 
-                # Query the album endpoint for specific release date and genre
+                # Query the album endpoint for release date and specific genre
                 if album_id:
                     album_resp = requests.get(f"https://api.deezer.com/album/{album_id}", timeout=5)
                     if album_resp.status_code == 200:
@@ -151,15 +151,26 @@ def download_and_process(url: str) -> None:
         'outtmpl': os.path.join(DOWNLOAD_DIR, '%(uploader)s - %(title)s.%(ext)s'),
         'continuedl': True,
         'noplaylist': True,
-        'quiet': True,
+        'quiet': False,
         'no_warnings': True,
+
+        # ────── Fix HTTP 403 Forbidden ──────
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['mweb', 'ios', 'web']
+            }
+        },
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+        }
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
             info = ydl.extract_info(url, download=True)
         except Exception as e:
-            print(f"Failed to download video: {e}")
+            print(f"\nFailed to download video: {e}")
             return
 
     # ────── Base Metadata Extraction ──────
@@ -189,17 +200,17 @@ def download_and_process(url: str) -> None:
     deezer_cover_url = None
 
     if content_type == 'music':
-        print("  🎵 Querying Deezer API...")
+        print("\n  🎵 Querying Deezer API...")
         enriched = enrich_music(meta['artist'], meta['title'])
         deezer_cover_url = enriched.pop('cover_url', None)
         meta.update({k: v for k, v in enriched.items() if v})
 
     elif content_type == 'tv_show':
-        print("  📺 Querying TVmaze...")
+        print("\n  📺 Querying TVmaze...")
         enriched = enrich_tv(yt_title, yt_uploader)
         meta.update({k: v for k, v in enriched.items() if v})
     else:
-        print("  🎬 Detected General Video. Using default metadata.")
+        print("\n  🎬 Detected General Video. Using default metadata.")
 
     print(f"  Title:  {meta['title']}")
     print(f"  Artist: {meta['artist']}")
@@ -236,7 +247,6 @@ def download_and_process(url: str) -> None:
     print("  ✓ Text metadata tags updated.")
 
     # ────── Embed High-Res Artwork ──────
-    # Prefer Deezer high-res cover art, fall back to YouTube thumbnail
     artwork_url = deezer_cover_url or info.get('thumbnail')
     if artwork_url:
         try:
@@ -262,7 +272,7 @@ def download_and_process(url: str) -> None:
         os.replace(mp3_path, target_path)
         print(f"\nSuccess! File routed to iTunes directory.")
     except Exception as e:
-        print(f"Could not move file: {e}\nFile remains in: {mp3_path}")
+        print(f"Could not move file to iTunes automatically: {e}\nFile saved in: {mp3_path}")
 
 
 def main():
