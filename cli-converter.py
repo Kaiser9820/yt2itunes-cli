@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 YouTube to MP3 Converter CLI
-Downloads YouTube videos as MP3, adds enriched metadata via external APIs, 
-embeds album artwork, and moves files to iTunes "Automatically Add to iTunes" folder.
+Downloads YouTube videos as MP3, adds enriched metadata via external APIs (Deezer / TVmaze),
+embeds high-res album artwork, and moves files to iTunes "Automatically Add to iTunes" folder.
 
 Requirements:
     pip install yt-dlp mutagen pillow requests
@@ -11,10 +11,10 @@ Requirements:
 
 import os
 import re
-import yt_dlp
-import requests
 from io import BytesIO
+import requests
 from PIL import Image
+import yt_dlp
 from mutagen.easyid3 import EasyID3
 from mutagen.id3 import ID3, APIC, ID3NoHeaderError
 
@@ -28,15 +28,21 @@ ITUNES_AUTO_ADD = os.path.expanduser("~/Music/iTunes/iTunes Media/Automatically 
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 # ────────────────────────────────────────────────
-# METADATA ENRICHMENT APIs
+# HELPER & METADATA ENRICHMENT APIs
 # ────────────────────────────────────────────────
+
+def clean_song_title(title: str) -> str:
+    """Remove video clutter like (Official Video), [HD], ft. Artist, etc."""
+    cleaned = re.sub(r'[\(\[\{].*?[\)\]\}]', '', title)
+    cleaned = re.sub(r'(?i)\b(official video|lyric video|official audio|audio|hd|4k|remastered)\b', '', cleaned)
+    return cleaned.strip()
 
 def classify_content(title: str, categories: list) -> str:
     """Determine if the video is a TV Show, Music, or General Video."""
     categories = [c.lower() for c in (categories or [])]
     title_lower = title.lower()
 
-    # Look for S01E01, Season 1 Ep 2, etc.
+    # Check for TV show indicators (S01E01, Season 1 Ep 2, etc.)
     tv_pattern = re.search(r'(s\d{1,2}\s*e\d{1,2}|season\s*\d+\s*episode\s*\d+)', title_lower)
     if tv_pattern or 'shows' in categories or 'film & animation' in categories:
         return 'tv_show'
@@ -47,31 +53,60 @@ def classify_content(title: str, categories: list) -> str:
     return 'general'
 
 def enrich_music(artist: str, title: str) -> dict:
-    """Fetch enriched song metadata from MusicBrainz."""
-    # MusicBrainz requires a descriptive User-Agent to prevent rate-limiting blocks
-    headers = {'User-Agent': 'YTMetadataEnricher/1.0 ( your-email@example.com )'}
-    query = f'recording:"{title}" AND artist:"{artist}"'
-    url = f"https://musicbrainz.org/ws/2/recording/?query={query}&fmt=json&limit=1"
+    """Fetch track, album, release date, genre, and high-res artwork from Deezer."""
+    cleaned_title = clean_song_title(title)
     
-    try:
-        resp = requests.get(url, headers=headers, timeout=5)
-        resp.raise_for_status()
-        data = resp.json()
-        
-        if data.get('recordings'):
-            recording = data['recordings'][0]
-            # Grab the first associated release (Album)
-            album = recording.get('releases', [{}])[0].get('title')
-            date = recording.get('first-release-date', '')[:4]
-            return {'album': album, 'date': date, 'genre': 'Music'}
-    except requests.RequestException as e:
-        print(f"  [!] MusicBrainz lookup failed: {e}")
-        
-    return {}
+    # Try an exact search first, then fall back to a flexible query
+    queries = [
+        f'artist:"{artist}" track:"{cleaned_title}"',
+        f'{artist} {cleaned_title}'
+    ]
+
+    for query in queries:
+        url = f"https://api.deezer.com/search/track?q={query}&limit=1"
+        try:
+            resp = requests.get(url, timeout=5)
+            resp.raise_for_status()
+            data = resp.json()
+
+            if data.get('data'):
+                track = data['data'][0]
+                album_info = track.get('album', {})
+                album_id = album_info.get('id')
+
+                release_date = ""
+                genre_name = "Music"
+
+                # Query the album endpoint for specific release date and genre
+                if album_id:
+                    album_resp = requests.get(f"https://api.deezer.com/album/{album_id}", timeout=5)
+                    if album_resp.status_code == 200:
+                        album_data = album_resp.json()
+                        release_date = album_data.get('release_date', '')[:4]
+                        
+                        genres = album_data.get('genres', {}).get('data', [])
+                        if genres and len(genres) > 0:
+                            genre_name = genres[0].get('name', 'Music')
+
+                return {
+                    'title': track.get('title_short', title),
+                    'artist': track.get('artist', {}).get('name', artist),
+                    'album': album_info.get('title', f"{title} - Single"),
+                    'date': release_date,
+                    'genre': genre_name,
+                    'cover_url': album_info.get('cover_xl') or album_info.get('cover_big')
+                }
+        except requests.RequestException as e:
+            print(f"  [!] Deezer query failed: {e}")
+
+    # Dynamic fallback if no exact Deezer track match was found
+    return {
+        'album': f"{title} - Single",
+        'genre': 'Music'
+    }
 
 def enrich_tv(title: str, uploader: str) -> dict:
     """Extract show name and fetch metadata from TVmaze."""
-    # Attempt to isolate show name before "S01E01" or "-"
     show_name = uploader 
     match = re.split(r'(?i)(s\d{1,2}\s*e\d{1,2}|-)', title)
     if match and match[0].strip():
@@ -88,8 +123,8 @@ def enrich_tv(title: str, uploader: str) -> dict:
             genres = ", ".join(show.get('genres', []))
             network = show.get('network', {}).get('name') or show.get('webChannel', {}).get('name') or uploader
             return {
-                'artist': network,           # Set Network/Creator as Artist
-                'album': show.get('name'),   # Set Show Name as Album
+                'artist': network,
+                'album': show.get('name'),
                 'genre': genres if genres else 'TV Show',
                 'date': show.get('premiered', '')[:4]
             }
@@ -133,16 +168,16 @@ def download_and_process(url: str) -> None:
     yt_date = info.get('upload_date', '')[:4] if info.get('upload_date') else ''
     categories = info.get('categories', [])
 
-    # Dictionary to hold our final tags
+    # Dynamic fallback metadata structure
     meta = {
         'title': yt_title,
         'artist': yt_uploader,
-        'album': 'YouTube Singles',
+        'album': f"{yt_title} - Single",
         'date': yt_date,
         'genre': 'Podcast/Web'
     }
 
-    # Attempt to parse standard "Artist - Title" pattern
+    # Split "Artist - Title" format if present
     if ' - ' in yt_title:
         parts = yt_title.split(' - ', 1)
         if len(parts[0]) < 40 and parts[0].strip():
@@ -151,14 +186,16 @@ def download_and_process(url: str) -> None:
 
     # ────── Content Classification & API Routing ──────
     content_type = classify_content(yt_title, categories)
-    
+    deezer_cover_url = None
+
     if content_type == 'music':
-        print(f"  🎵 Detected Music. Querying MusicBrainz...")
+        print("  🎵 Querying Deezer API...")
         enriched = enrich_music(meta['artist'], meta['title'])
+        deezer_cover_url = enriched.pop('cover_url', None)
         meta.update({k: v for k, v in enriched.items() if v})
 
     elif content_type == 'tv_show':
-        print(f"  📺 Detected TV Show. Querying TVmaze...")
+        print("  📺 Querying TVmaze...")
         enriched = enrich_tv(yt_title, yt_uploader)
         meta.update({k: v for k, v in enriched.items() if v})
     else:
@@ -167,6 +204,8 @@ def download_and_process(url: str) -> None:
     print(f"  Title:  {meta['title']}")
     print(f"  Artist: {meta['artist']}")
     print(f"  Album:  {meta['album']}")
+    print(f"  Genre:  {meta['genre']}")
+    print(f"  Year:   {meta['date']}")
 
     # ────── Locate the MP3 file ──────
     mp3_path = None
@@ -196,15 +235,15 @@ def download_and_process(url: str) -> None:
     tags.save(mp3_path)
     print("  ✓ Text metadata tags updated.")
 
-    # ────── Embed album artwork ──────
-    thumbnail_url = info.get('thumbnail')
-    if thumbnail_url:
+    # ────── Embed High-Res Artwork ──────
+    # Prefer Deezer high-res cover art, fall back to YouTube thumbnail
+    artwork_url = deezer_cover_url or info.get('thumbnail')
+    if artwork_url:
         try:
-            resp = requests.get(thumbnail_url, timeout=10)
+            resp = requests.get(artwork_url, timeout=10)
             if resp.status_code == 200:
                 img = Image.open(BytesIO(resp.content))
                 img_buffer = BytesIO()
-                # Ensure image is RGB for JPEG compatibility (handles WEBP thumbnails with alpha)
                 img.convert('RGB').save(img_buffer, format='JPEG')
                 
                 id3_tags = ID3(mp3_path)
@@ -217,7 +256,7 @@ def download_and_process(url: str) -> None:
         except Exception as e:
             print(f"  [!] Could not add artwork: {e}")
 
-    # ────── Move to iTunes ──────
+    # ────── Move to iTunes Directory ──────
     target_path = os.path.join(ITUNES_AUTO_ADD, os.path.basename(mp3_path))
     try:
         os.replace(mp3_path, target_path)
